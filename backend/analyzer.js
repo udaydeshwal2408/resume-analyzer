@@ -1,88 +1,84 @@
 import { ChatGroq } from "@langchain/groq";
-import { PromptTemplate } from "@langchain/core/prompts"; // Fixed import path
+import { PromptTemplate } from "@langchain/core/prompts";
+import { JsonOutputParser } from "@langchain/core/output_parsers";
 import { getResumeText } from "./parser.js";
+import { processResumeRAG } from "./rag_service.js"; // Our new RAG logic
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Initialize the Groq model
+// 1. Initialize the Model
 const model = new ChatGroq({
     apiKey: process.env.GROQ_API_KEY,
-    model: "llama-3.3-70b-versatile", // Use 'model' instead of 'modelName'
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.2, // Lower temperature = more consistent/factual output
 });
 
-async function main() {
-    console.log("Reading resume...");
-    
-    // Ensure you have a file named 'sample_resume.pdf' in your project root
-    const resumeText = await getResumeText("sample_resume.pdf");
+export async function analyzeResume(resumeFilePath, jobDescription) {
+    try {
+        console.log("--- Starting Analysis Pipeline ---");
 
-    if (!resumeText) {
-        console.error("Failed to extract resume text. Check if the file path is correct.");
-        return;
-    }
+        // 2. Extract raw text from PDF
+        const rawResumeText = await getResumeText(resumeFilePath);
+        if (!rawResumeText) throw new Error("Failed to extract text from PDF.");
 
-    const jobDescription = `
-        Looking for a MERN Stack Developer. 
-        Must know React, Node.js, and MongoDB. 
-        Experience with AWS and Redis is a huge plus.
-    `;
+        // 3. RAG STEP: Semantic Retrieval
+        // Instead of the whole resume, we get the 'Influential Areas'
+        const relevantContext = await processResumeRAG(rawResumeText, jobDescription);
 
-    // Prompt Template Configuration
-    // Note: Use {{double braces}} for sections you want the AI to fill in 
-    // but don't want LangChain to treat as an input variable.
-    const template = `
-        You are a Senior Technical Recruiter and Career Coach.
-        Compare the following Resume with the Job Description.
+        // 4. Setup JSON Parser
+        const parser = new JsonOutputParser();
 
-        RESUME TEXT:
-        {resumeText}
+        // 5. Define the Prompt Template
+        const template = `
+        You are a Senior Technical Recruiter and Career Coach. 
+        Analyze the provided Resume Context against the Job Description.
+
+        RESUME CONTEXT (Relevant Sections):
+        {resumeContext}
 
         JOB DESCRIPTION:
         {jobDescription}
 
-        Provide the analysis in the following strict format:
+        Return the analysis ONLY as a valid JSON object. Do not include any intro or outro text.
+        Structure:
+        {{
+            "matchScore": (number between 0-100),
+            "summary": "2-line summary of fit",
+            "skillGapAnalysis": {{
+                "missingKeywords": ["skill1", "skill2"],
+                "majorGap": "The most critical missing skill"
+            }},
+            "roadmap": {{
+                "week1": "Basics of the major gap",
+                "week2": "Core concepts",
+                "week3": "Hands-on project",
+                "week4": "Interview preparation"
+            }},
+            "courseRecommendation": "Name of a free resource/playlist"
+        }}
+        
+        {format_instructions}`;
 
-        ### 1. Match Overview
-        * **Match Score:** [0-100]%
-        * **Summary:** A 2-line summary of the fit.
+        const prompt = new PromptTemplate({
+            template: template,
+            inputVariables: ["resumeContext", "jobDescription"],
+            partialVariables: { format_instructions: parser.getFormatInstructions() }
+        });
 
-        ### 2. Skill Gap Analysis
-        * **Missing Keywords:** [List 3-5 keywords]
-        * **Major Skill Gap:** [Identify the most important skill the candidate is missing]
+        // 6. The Pipeline (The "Pipe" assembly line)
+        const chain = prompt.pipe(model).pipe(parser);
 
-        ### 3. 4-Week Mastery Roadmap
-        (Focus on the Major Skill Gap identified above)
-        * **Week 1 (Basics):** [What to learn]
-        * **Week 2 (Core Concepts):** [What to learn]
-        * **Week 3 (Project):** [A small project to build using this skill]
-        * **Week 4 (Interview Prep):** [Common interview questions for this skill]
-
-        ### 4. Course Recommendation
-        * Suggest one high-quality free resource (like a specific YouTube playlist, documentation, or freeCodeCamp link) for this skill.
-    `;
-
-    const prompt = new PromptTemplate({
-        template: template,
-        inputVariables: ["resumeText", "jobDescription"] // Names must match the single {braces} in template
-    });
-
-    // Create the Chain
-    const chain = prompt.pipe(model);
-
-    console.log("Analyzing with AI... (this may take a few seconds)");
-    
-    try {
-        const result = await chain.invoke({
-            resumeText: resumeText, 
+        console.log("Llama-3 is generating structured analysis...");
+        const response = await chain.invoke({
+            resumeContext: relevantContext,
             jobDescription: jobDescription
         });
 
-        console.log("\n--- ANALYSIS RESULT ---");
-        console.log(result.content);
+        return response; // This is now a clean JS Object!
+
     } catch (error) {
-        console.error("Error during AI analysis:", error.message);
+        console.error("Error in analyzer.js:", error.message);
+        throw error;
     }
 }
-
-main();

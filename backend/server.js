@@ -1,20 +1,25 @@
-import { ChatGroq } from "@langchain/groq";
-import dotenv from "dotenv";
+import express from "express";
+import upload from "./middleware/upload.js"; // Import our new middleware
+import { main as analyzeResume } from "./analyzer.js";
 
-dotenv.config();
+const app = express();
 
-const model = new ChatGroq({
-  apiKey: process.env.GROQ_API_KEY,
-  model: "llama-3.3-70b-versatile", // Use 'model' for JavaScript
+// The 'upload.single("resume")' tells Express: 
+// "Before running my code, let Multer check for a file named 'resume'"
+// Inside server.js
+app.post("/api/analyze", upload.single("resume"), async (req, res) => {
+    try {
+        const { jobDescription } = req.body;
+        const filePath = req.file.path;
+
+        // Note: Change main() to analyzeResume if you renamed it
+        const analysis = await analyzeResume(filePath, jobDescription);
+
+        res.status(200).json({
+            success: true,
+            data: analysis // This will be the JSON from Llama
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
-
-async function test() {
-  try {
-    const res = await model.invoke("Hello, are you working?");
-    console.log("AI Response:", res.content);
-  } catch (error) {
-    console.error("Error connecting to Groq:", error.message);
-  }
-}
-
-test();
